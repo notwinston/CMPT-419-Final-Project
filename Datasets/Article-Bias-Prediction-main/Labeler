@@ -1,0 +1,143 @@
+import os
+import json
+import pandas as pd
+import numpy as np
+import re
+import nltk
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from nltk.corpus import stopwords
+from sklearn.model_selection import train_test_split
+from torch.utils.data import Dataset, DataLoader
+from collections import Counter
+from nltk.tokenize import word_tokenize
+
+# Ensure NLTK data is available
+nltk.download('stopwords')
+nltk.download('punkt')
+
+# Optionally set the NLTK data path if required
+nltk.data.path.append(r"C:\Users\sweee\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\nltk")
+
+
+# Load your CSV file
+df = pd.read_csv(r"C:\Users\sweee\Documents\GitHub\CMPT-419-Final-Project\Datasets\Article-Bias-Prediction-main\loaded_articles.csv")
+
+# Preload stopwords list
+stop_words = set(stopwords.words('english'))
+
+# Preprocessing function
+def preprocess_text(text):
+    text = text.lower()
+    text = re.sub(r'[^a-zA-Z\s]', '', text)
+    words = word_tokenize(text)
+    words = [word for word in words if word not in stop_words]
+    return words
+
+# Apply preprocessing
+df['processed_content'] = df["content"].apply(preprocess_text)
+
+# Convert labels
+label_map = {'left': 0, 'left leaning': 1, 'center': 2, 'right leaning': 3, 'right': 4}
+df['bias_label'] = df['bias_text'].map(label_map)
+
+# Handle missing labels
+df = df.dropna(subset=['bias_label'])
+
+# Build Vocabulary (Limit to 5000 most common words)
+all_words = [word for content in df['processed_content'] for word in content]
+vocab = {word: idx + 1 for idx, (word, _) in enumerate(Counter(all_words).most_common(5000))}
+vocab['<PAD>'] = 0  # Padding
+vocab['<UNK>'] = len(vocab)  # Unknown words
+
+# Encoding function
+def encode_text(text, max_length=500):
+    encoded = [vocab.get(word, vocab['<UNK>']) for word in text][:max_length]
+    encoded += [vocab['<PAD>']] * (max_length - len(encoded))  # Padding
+    return encoded
+
+df['encoded_content'] = df['processed_content'].apply(lambda x: encode_text(x))
+
+# Prepare DataLoader
+class ArticleDataset(Dataset):
+    def __init__(self, texts, labels):
+        self.texts = torch.tensor(texts, dtype=torch.long)
+        self.labels = torch.tensor(labels, dtype=torch.long)
+
+    def __len__(self):
+        return len(self.texts)
+
+    def __getitem__(self, idx):
+        return self.texts[idx], self.labels[idx]
+
+X_train, X_test, y_train, y_test = train_test_split(df['encoded_content'].tolist(), df['bias_label'].tolist(), test_size=0.2, random_state=42)
+train_dataset = ArticleDataset(X_train, y_train)
+test_dataset = ArticleDataset(X_test, y_test)
+train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+test_loader = DataLoader(test_dataset, batch_size=32)
+
+# Define RNN Model
+class RNNClassifier(nn.Module):
+    def __init__(self, vocab_size, embed_dim, hidden_dim, output_dim):
+        super(RNNClassifier, self).__init__()
+        self.embedding = nn.Embedding(vocab_size, embed_dim, padding_idx=0)
+        self.rnn = nn.LSTM(embed_dim, hidden_dim, batch_first=True)
+        self.fc = nn.Linear(hidden_dim, output_dim)
+
+    def forward(self, x):
+        embedded = self.embedding(x)
+        _, (hidden, _) = self.rnn(embedded)
+        return self.fc(hidden[-1])
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = RNNClassifier(len(vocab), 128, 64, 5).to(device)
+criterion = nn.CrossEntropyLoss()
+optimizer = optim.Adam(model.parameters(), lr=0.001)
+
+# Train Model
+def train_model(model, train_loader, criterion, optimizer, epochs=5):
+    model.train()
+    for epoch in range(epochs):
+        total_loss = 0
+        for texts, labels in train_loader:
+            texts, labels = texts.to(device), labels.to(device)
+            optimizer.zero_grad()
+            outputs = model(texts)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+        print(f"Epoch {epoch + 1}, Loss: {total_loss / len(train_loader)}")
+
+train_model(model, train_loader, criterion, optimizer)
+
+# Evaluate Model
+def evaluate_model(model, test_loader):
+    model.eval()
+    predictions, actuals = [], []
+    with torch.no_grad():
+        for texts, labels in test_loader:
+            texts, labels = texts.to(device), labels.to(device)
+            outputs = model(texts)
+            _, preds = torch.max(outputs, 1)
+            predictions.extend(preds.cpu().numpy())
+            actuals.extend(labels.cpu().numpy())
+    return predictions, actuals
+
+predictions, actuals = evaluate_model(model, test_loader)
+accuracy = np.mean(np.array(predictions) == np.array(actuals))
+print(f"Test Accuracy: {accuracy:.4f}")
+
+# Predict on Full Dataset
+model.eval()
+encoded_texts = torch.tensor(df['encoded_content'].tolist(), dtype=torch.long).to(device)
+with torch.no_grad():
+    predictions = model(encoded_texts).argmax(dim=1).cpu().numpy()
+
+df['predicted_bias'] = predictions
+df['predicted_bias_text'] = df['predicted_bias'].map({v: k for k, v in label_map.items()})
+
+# Save updated dataset
+df.to_csv("updated_articles_rnn.csv", index=False)
+print("Updated dataset saved as updated_articles_rnn.csv")

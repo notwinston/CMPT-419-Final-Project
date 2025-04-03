@@ -1,0 +1,52 @@
+import os
+import json
+import pandas as pd
+
+# ✅ Define the correct path to the 'jsons' directory
+data_dir = r"C:\Users\sweee\Documents\GitHub\CMPT-419-Final-Project\Datasets\Article-Bias-Prediction-main\data\jsons"
+
+# ✅ Ensure the directory exists
+if not os.path.exists(data_dir):
+    raise FileNotFoundError(f"Error: Directory '{data_dir}' not found!")
+
+# ✅ List all JSON files in the directory
+json_files = [f for f in os.listdir(data_dir) if f.endswith(".json")]
+if not json_files:
+    raise FileNotFoundError(f"Error: No JSON files found in '{data_dir}'!")
+
+print(f"Found {len(json_files)} JSON files. Loading...")
+
+# ✅ Load all JSON data into a list
+articles = []
+for file in json_files:
+    file_path = os.path.join(data_dir, file)
+    with open(file_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+        
+        # ✅ Ensure consistent structure (list or dict)
+        if isinstance(data, list):  
+            articles.extend(data)  # If JSON contains a list of articles
+        elif isinstance(data, dict):
+            articles.append(data)  # If JSON contains a single article
+        else:
+            print(f"⚠️ Warning: Unexpected format in {file}")
+
+# ✅ Convert to Pandas DataFrame
+df = pd.DataFrame(articles)
+
+# ✅ Print DataFrame info
+print("\nDataFrame Loaded Successfully!")
+print(df.info())
+print("\nFirst few rows:")
+print(df.head())
+
+# ✅ Check for missing expected columns
+expected_columns = ["content", "bias_text"]
+missing_columns = [col for col in expected_columns if col not in df.columns]
+if missing_columns:
+    print(f"⚠️ Warning: Missing columns {missing_columns}! Check JSON structure.")
+
+# ✅ Save the DataFrame as CSV (final step)
+save_path = r"C:\Users\sweee\Documents\GitHub\CMPT-419-Final-Project\Datasets\loaded_articles.csv"
+df.to_csv(save_path, index=False, encoding="utf-8")
+print(f"\n✅ DataFrame saved successfully as '{save_path}'!")
